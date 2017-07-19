@@ -1,0 +1,24 @@
+{
+  "name": "original-image-finder",
+  "version": "1.0.0",
+  "description": "Finds the original image of a processed version.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/bethesque/original-image-finder.git"
+  },
+  "author": "Beth Skurrie <beth@bethesque.com> (https://github.com/bethesque)",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/bethesque/original-image-finder/issues"
+  },
+  "homepage": "https://github.com/bethesque/original-image-finder#readme",
+  "dependencies": {
+    "node-resemble": "^2.0.1",
+    "glob": "^7.1.2",
+    "moment": "^2.18.1"
+  }
+}
