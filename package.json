@@ -17,8 +17,9 @@
   },
   "homepage": "https://github.com/bethesque/original-image-finder#readme",
   "dependencies": {
-    "node-resemble": "^2.0.1",
+    "fast-exif": "^1.0.1",
     "glob": "^7.1.2",
-    "moment": "^2.18.1"
+    "moment": "^2.18.1",
+    "node-resemble": "^2.0.1"
   }
 }
