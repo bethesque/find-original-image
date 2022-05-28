@@ -19,7 +19,11 @@
   "dependencies": {
     "fast-exif": "^1.0.1",
     "glob": "^7.1.2",
+    "image-size": "^0.8.3",
+    "jpeg-js": "^0.3.6",
     "moment": "^2.18.1",
-    "node-resemble": "^2.0.1"
+    "pixelmatch": "^5.1.0",
+    "pngjs": "^3.4.0",
+    "sharp": "^0.23.4"
   }
 }

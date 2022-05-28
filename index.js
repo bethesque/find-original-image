@@ -3,9 +3,13 @@
 const fs = require('fs');
 const glob = require('glob');
 const path = require('path');
-const resemble = require('node-resemble');
 const moment = require('moment');
 const exif = require('fast-exif');
+const sharp = require('sharp');
+const PNG = require('pngjs').PNG;
+var jpeg = require('jpeg-js');
+const pixelmatch = require('pixelmatch');
+
 
 function getDateFromFilePath(imagePath) {
   let dasherizedImagePath = imagePath.replace(/_/g, '-');
@@ -20,44 +24,72 @@ function getDateFromFilePath(imagePath) {
   if(date) {
     return moment(date, "YYYY-MM-DD");
   } else {
-    return moment();
+    return null;
   }
 }
 
-function compareImages(targetImagePath, testImagePath, handleMatchFound){
-  console.log("Checking", targetImagePath, "against", testImagePath);
-  let start = new Date();
-  resemble(targetImagePath).compareTo(testImagePath).scaleToSameSize().onComplete(function(data){
-    let end = new Date();
-    console.log("Finished in", ((end-start)/1000), "seconds");
-    global.gc();
-    if(data.error) {
-      console.error("Error reading", testImagePath);
-    } else {
-      if (data.rawMisMatchPercentage < 1) {
-        handleMatchFound(targetImagePath, testImagePath);
-      }
+function concatenate(resultConstructor, ...arrays) {
+    let totalLength = 0;
+    for (let arr of arrays) {
+        totalLength += arr.length;
     }
-  });
+    let result = new resultConstructor(totalLength);
+    let offset = 0;
+    for (let arr of arrays) {
+        result.set(arr, offset);
+        offset += arr.length;
+    }
+    return result;
 }
 
-function prioritiseImagesWithSimilarDates(targetImagePath, testImages) {
+function getKeyLinesFromImage(decodedImage) {
+  const lineLength = decodedImage.width * 4
+  const middleLineNumber = decodedImage.width / 2
+  const middleLineStart = middleLineNumber * lineLength
+  const middleLineEnd = (middleLineNumber + 1) * lineLength
+  const firstLine = decodedImage.data.slice(0, lineLength)
+  const middleLine = decodedImage.data.slice(middleLineStart, middleLineEnd)
+  const lastLine = decodedImage.data.slice(decodedImage.data.size - lineLength, decodedImage.data.size)
+
+  return decodedImage.data.slice(0, lineLength)
+}
+
+function compareImages(targetImageMetadata, testImageMetadata, handleMatchFound){
+
+  //console.log("Comparing", targetImageMetadata.path, testImageMetadata.path)
+
+  const numDiffPixels = pixelmatch(
+    targetImageMetadata.fingerprint.data,
+    testImageMetadata.fingerprint.data,
+    null,
+    targetImageMetadata.fingerprint.width,
+    targetImageMetadata.fingerprint.height,
+    {threshold: 0.2});
+
+  if(numDiffPixels === 0 || (numDiffPixels / targetImageMetadata.fingerprint.length < 0.1)) {
+    handleMatchFound(targetImageMetadata.path, testImageMetadata.path)
+  }
+}
+
+function prioritiseImagesWithSimilarDates(targetImagePath, testImageMetadatas) {
   let targetImageDate = getDateFromFilePath(targetImagePath);
+  if (targetImageDate === null) {
+    return testImageMetadatas
+  }
   let testImagePathsWithDateDiffs = [];
 
-  testImages.forEach(function(testImage, index){
-    let dateDifference = Math.abs(targetImageDate.diff(testImage.dateTaken));
+  testImageMetadatas.forEach(function(testImageMetadata, index){
+    let dateDifference = Math.abs(targetImageDate.diff(testImageMetadata.dateTaken));
 
     if((MAX_DATE_DIFF === null || dateDifference < MAX_DATE_DIFF) && testImagePathsWithDateDiffs.length < 100) {
-      testImagePathsWithDateDiffs.push({path: testImage.path, diff: dateDifference});
+      testImagePathsWithDateDiffs.push({metadata: testImageMetadata, diff: dateDifference});
     }
   });
 
   let sorted = testImagePathsWithDateDiffs.sort(function(a, b){
     return a.diff - b.diff;
   });
-  let prioritisedImagePaths = sorted.map(obj => { return obj.path });
-  return prioritisedImagePaths;
+  return sorted.map(obj => obj.metadata);
 }
 
 function createDir(dir) {
@@ -81,11 +113,16 @@ function copyTestImageToSearchResultsDir(testImagePath, searchResultsDir){
 function createMatchFoundHandler(searchResults, foundTargetImageDir, searchResultsDir){
   return function(targetImagePath, testImagePath) {
     if(!searchResults[targetImagePath]) {
-      console.log("MATCHED!", targetImagePath, "with", testImagePath);
-      searchResults[targetImagePath] = testImagePath;
-      moveTargetImageToFoundDir(targetImagePath, foundTargetImageDir);
-      copyTestImageToSearchResultsDir(testImagePath, searchResultsDir);
+      searchResults[targetImagePath] = []
     }
+
+    const searchResultsForTarget = searchResults[targetImagePath]
+
+    searchResultsForTarget.push(testImagePath)
+
+    console.log("MATCHED!", targetImagePath, "with", testImagePath);
+    moveTargetImageToFoundDir(targetImagePath, foundTargetImageDir);
+    copyTestImageToSearchResultsDir(testImagePath, searchResultsDir);
   };
 }
 
@@ -97,12 +134,14 @@ function getTestImagePaths(searchDirs) {
   return testImagePaths;
 }
 
-function doSearch(targetImagePaths, testImages, searchResults, handleMatchFound) {
-  targetImagePaths.forEach(function(targetImagePath){
-    let prioritisedImagePaths = prioritiseImagesWithSimilarDates(targetImagePath, testImages);
-    prioritisedImagePaths.forEach(testImagePath => {
+function doSearch(targetImageMetadatas, testImageMetadatas, searchResults, handleMatchFound) {
+  targetImageMetadatas.forEach(function(targetImageMetadata){
+    const targetImagePath = targetImageMetadata.path
+    console.log(`Searching for ${targetImagePath}`)
+    let prioritisedImageMetadatas = prioritiseImagesWithSimilarDates(targetImagePath, testImageMetadatas);
+    prioritisedImageMetadatas.forEach(testImageMetadatas => {
       if(!searchResults[targetImagePath]) {
-        compareImages(targetImagePath, testImagePath, handleMatchFound);
+        compareImages(targetImageMetadata, testImageMetadatas, handleMatchFound);
       }
     });
   });
@@ -113,52 +152,85 @@ function findOriginalImages(targetImagesDir, searchDirs, searchResultsDir) {
   let foundTargetImageDir = path.join(targetImagesDir, 'found');
   createDir(foundTargetImageDir);
   createDir(searchResultsDir);
-
-  let targetImagePaths = glob.sync(targetImagesDir + '/*.{jpg,jpeg,JPG,JPEG}', {});
-  let testImagePaths = getTestImagePaths(searchDirs);
   let handleMatchFound = createMatchFoundHandler(searchResults, foundTargetImageDir, searchResultsDir);
 
-  let buildImagesPromise = buildImages(testImagePaths);
+  let targetImagePaths = glob.sync(targetImagesDir + '/*.{jpg,jpeg,JPG,JPEG}', {});
+  let targetImageMetadatasPromises = extractMetadataForImages(targetImagePaths)
+  let testImagePaths = getTestImagePaths(searchDirs);
+  let testImageMetadataPromises = extractMetadataForImages(testImagePaths);
 
-  buildImagesPromise.then(testImages => {
-    doSearch(targetImagePaths, testImages, searchResults, handleMatchFound);
-    console.log(searchResults);
-  }).catch(reason => {
+  Promise.all([targetImageMetadatasPromises, testImageMetadataPromises])
+    .then(([targetImageMetadatas, testImageMetadatas]) => {
+      doSearch(targetImageMetadatas, testImageMetadatas, searchResults, handleMatchFound);
+      console.log(searchResults);
+    }).catch(reason => {
     console.log(reason);
   })
 
   return searchResults;
 }
 
-function buildImage(path) {
-  return new Promise(function(resolve, reject) {
-    function success(exifData) {
-      let dateTaken = null;
-      if (exifData && exifData.exif && exifData.exif.DateTimeOriginal) {
-        dateTaken = moment(exifData.exif.DateTimeOriginal);
-      } else {
-        dateTaken = getDateFromFilePath(path);
+function getFingerPrint(path) {
+  const height = 480
+  const width = 480
+
+  return sharp(path)
+    .resize({ height, width, fit: 'fill'})
+    .toBuffer()
+    .then(buffer => {
+      var rawImage = jpeg.decode(buffer, true);
+      return {
+        width: width,
+        height: 1,
+        data: getKeyLinesFromImage(rawImage)
       }
-      resolve({path: path, dateTaken: dateTaken});
-    }
-    function error(error) {
-      console.log(error);
-      resolve({path: path, dateTaken: getDateFromFilePath(path)});
-    }
-    return exif.read(path).then(success).error(error);
-  });
+    })
 }
 
-function buildImages(testImagePaths) {
-  let promises = testImagePaths.map(path => {
-    return buildImage(path);
-  });
+function extractMetadata(path) {
+  function success(exifData) {
+    let dateTaken = null;
+    if (exifData && exifData.exif && exifData.exif.DateTimeOriginal) {
+      dateTaken = moment(exifData.exif.DateTimeOriginal);
+    } else {
+      dateTaken = getDateFromFilePath(path);
+    }
+    const width = exifData && exifData.image && exifData.image.ImageWidth
+    const height = exifData && exifData.image && exifData.image.ImageHeight
 
+    function withFingerprint(fingerprint) {
+      const metadata = {
+        fingerprint,
+        path,
+        dateTaken,
+        width,
+        height
+      };
+      return metadata
+    }
+
+    return getFingerPrint(path).then(withFingerprint).catch(error => null);
+  }
+  function error(error) {
+    console.log(error);
+    resolve({path: path, dateTaken: getDateFromFilePath(path)});
+  }
+  return exif.read(path).then(success).error(error);
+}
+
+function convertPromiseArrayIntoSinglePromise(promises) {
   return new Promise(function(resolve, reject) {
     Promise.all(promises)
       .then(results => { resolve(results) })
       .catch(reason => { console.log(reason) });
   });
+}
+
+function extractMetadataForImages(imagePaths) {
+  let promises = imagePaths.map(path => extractMetadata(path));
+  return convertPromiseArrayIntoSinglePromise(promises).then(metadatas => {
+    return metadatas.filter(Boolean)
+  })
 }
 
 
@@ -168,7 +240,8 @@ const MAX_DATE_DIFF = null;
 //node --expose-gc index.js
 
 let targetImagesDir = 'target-images'
-let searchDirs = ['test-images'];
+// let searchDirs = ['test-images'];
+let searchDirs = ['/Users/bethanyskurrie/Dropbox/Camera Uploads']
 let searchResultsDir = 'search-results';
-console.log("Searching for originals for ", targetImagesDir, "in", searchDirs);
+console.log("Searching for originals for", targetImagesDir, "in", searchDirs);
 let searchResults = findOriginalImages(targetImagesDir, searchDirs, searchResultsDir);
